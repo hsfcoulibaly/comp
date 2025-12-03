@@ -1,0 +1,62 @@
+<hr>
+<h2>Assignment 2: Template Matching and Blurring</h2>
+<p>Upload a scene image. The system will check a local database of 10 templates (pre-loaded in the `static/templates` directory) for a match using Normalized Correlation. If detected, the object region will be blurred.</p>
+
+<p>
+    <strong>Scene Image:</strong> <input type="file" id="sceneImageLoader" accept="image/*">
+</p>
+
+<button onclick="startDetectionAndBlur()">Start Detection & Blur</button>
+
+<div id="loadingMessage" style="color: blue; display: none;">Processing...</div>
+
+<h3>Result Image:</h3>
+<p id="matchStatus"></p>
+<img id="resultImage" style="max-width: 100%; border: 1px solid #ccc; display: none;">
+
+
+<script>
+    // ... Existing A1 JavaScript ...
+
+    // --- Assignment 2 JavaScript Logic ---
+    function startDetectionAndBlur() {
+        const fileInput = document.getElementById('sceneImageLoader');
+        const file = fileInput.files[0];
+        const loadingMessage = document.getElementById('loadingMessage');
+        const resultImage = document.getElementById('resultImage');
+        const matchStatus = document.getElementById('matchStatus');
+
+        if (!file) {
+            alert('Please select an image file first.');
+            return;
+        }
+
+        loadingMessage.style.display = 'block';
+        matchStatus.textContent = '';
+        resultImage.style.display = 'none';
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        fetch('/template_matching', {
+            method: 'POST',
+            body: formData,
+        })
+        .then(response => response.json())
+        .then(result => {
+            loadingMessage.style.display = 'none';
+            matchStatus.textContent = result.message;
+            if (result.status === 'success' && result.image_url) {
+                resultImage.src = result.image_url;
+                resultImage.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            loadingMessage.style.display = 'none';
+            matchStatus.textContent = 'An error occurred during processing.';
+            console.error('Error:', error);
+        });
+    }
+</script>
+</body>
+</html>

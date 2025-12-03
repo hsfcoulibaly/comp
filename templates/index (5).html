@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calibrated Stereo Size Estimation</title>
+    <!-- Load Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the interactive elements */
+        .container {
+            max-width: 1200px;
+        }
+        canvas {
+            border: 2px solid #3b82f6;
+            cursor: crosshair;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans p-6">
+
+    <div class="container mx-auto bg-white shadow-xl rounded-2xl p-8">
+        <h1 class="text-3xl font-extrabold text-blue-700 mb-2">Calibrated Stereo Object Size Estimation</h1>
+        <p class="text-gray-600 mb-8">
+            Estimate distance (Z) and real-world size using the principles of calibrated stereo vision.
+            <span class="font-semibold">Note:</span> This app assumes your uploaded images are already **rectified**.
+        </p>
+
+        <!-- Configuration Panel -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 p-6 bg-blue-50 rounded-xl border border-blue-200">
+            <div>
+                <label for="fx" class="block text-sm font-medium text-gray-700">Focal Length ($f_x$) in Pixels</label>
+                <input type="number" id="fx" value="1250" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="e.g., 1250.0">
+            </div>
+            <div>
+                <label for="baseline" class="block text-sm font-medium text-gray-700">Baseline ($B$) in cm</label>
+                <input type="number" id="baseline" value="6.0" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-2 border" placeholder="e.g., 6.0">
+            </div>
+            <div class="flex items-center pt-5">
+                <button id="resetButton" onclick="resetApp()" class="w-full py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-red-500 hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition duration-150">
+                    Reset Clicks & Images
+                </button>
+            </div>
+        </div>
+
+        <!-- Image Upload and Canvas -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div>
+                <label for="imageL" class="block text-sm font-medium text-gray-700">Upload Left Image</label>
+                <input type="file" id="imageL" accept="image/*" class="mt-1 block w-full text-sm text-gray-500" onchange="loadImages()">
+            </div>
+            <div>
+                <label for="imageR" class="block text-sm font-medium text-gray-700">Upload Right Image</label>
+                <input type="file" id="imageR" accept="image/*" class="mt-1 block w-full text-sm text-gray-500" onchange="loadImages()">
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <div id="instructions" class="p-4 mb-6 bg-yellow-100 border border-yellow-300 rounded-lg text-yellow-800">
+            <p class="font-semibold mb-2">Clicking Sequence (4 Clicks Total):</p>
+            <ol class="list-decimal list-inside space-y-1 text-sm">
+                <li><span class="font-bold text-blue-700">P1_L:</span> Center point of the object in the **LEFT** image (to find $x_L$).</li>
+                <li><span class="font-bold text-blue-700">P1_R:</span> Corresponding center point in the **RIGHT** image (to find $x_R$ and disparity).</li>
+                <li><span class="font-bold text-blue-700">P2_Edge1:</span> Left edge of the object in the **LEFT** image (for pixel size $\Delta x$).</li>
+                <li><span class="font-bold text-blue-700">P2_Edge2:</span> Right edge of the object in the **LEFT** image (for pixel size $\Delta x$).</li>
+            </ol>
+        </div>
+
+        <!-- Canvas and Status -->
+        <div class="flex flex-col items-center">
+            <canvas id="stereoCanvas" class="w-full h-auto mb-4 rounded-lg"></canvas>
+            <div id="statusMessage" class="text-sm font-medium text-gray-500">Waiting for image uploads...</div>
+        </div>
+
+
+        <!-- Results Display -->
+        <div class="mt-8 p-6 bg-green-50 rounded-xl border border-green-200">
+            <h2 class="text-xl font-bold text-green-700 mb-3">Calculation Results</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="p-3 bg-white rounded-lg shadow-inner">
+                    <p class="text-sm font-medium text-gray-500">Estimated Distance ($Z$)</p>
+                    <p id="resultZ" class="text-2xl font-extrabold text-gray-800">-- cm</p>
+                </div>
+                <div class="p-3 bg-white rounded-lg shadow-inner">
+                    <p class="text-sm font-medium text-gray-500">Estimated Object Width</p>
+                    <p id="resultWidth" class="text-2xl font-extrabold text-gray-800">-- cm</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorBox" class="mt-4 p-4 text-sm font-medium text-red-700 bg-red-100 rounded-lg hidden"></div>
+    </div>
+
+    <script>
+        // Global state variables
+        const canvas = document.getElementById('stereoCanvas');
+        const ctx = canvas.getContext('2d');
+        let imgLeft = new Image();
+        let imgRight = new Image();
+        let clickedPoints = [];
+        let canvasScale = 1.0;
+        let originalLeftWidth = 0;
+        let originalRightWidth = 0;
+        let canvasTotalWidth = 0;
+
+        // --- Core Application Logic ---
+
+        function updateStatus() {
+            const status = document.getElementById('statusMessage');
+            if (imgLeft.src && imgRight.src) {
+                if (clickedPoints.length === 4) {
+                    status.innerHTML = `<span class="text-green-600">4/4 Clicks Captured!</span> Results displayed below. Click 'Reset' to start over.`;
+                } else {
+                    status.innerHTML = `Images loaded. <span class="text-blue-600">${clickedPoints.length}/4 clicks captured.</span>`;
+                }
+            } else {
+                status.textContent = 'Waiting for image uploads...';
+            }
+        }
+
+        function resetApp() {
+            clickedPoints = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            document.getElementById('resultZ').textContent = '-- cm';
+            document.getElementById('resultWidth').textContent = '-- cm';
+            document.getElementById('errorBox').classList.add('hidden');
+            document.getElementById('statusMessage').textContent = 'Clicks reset. Please click 4 points again.';
+            if (imgLeft.src && imgRight.src) {
+                // Redraw canvas to clear visual marks
+                redrawCanvas();
+            }
+            updateStatus();
+        }
+
+        function loadImages() {
+            const fileL = document.getElementById('imageL').files[0];
+            const fileR = document.getElementById('imageR').files[0];
+
+            if (!fileL || !fileR) {
+                updateStatus();
+                return;
+            }
+
+            // Reset state upon new images
+            resetApp();
+
+            const readerL = new FileReader();
+            readerL.onload = (e) => {
+                imgLeft.onload = () => {
+                    imgLeft.src = e.target.result; // Setting src here triggers onload again, which is fine
+                    originalLeftWidth = imgLeft.width;
+                    originalHeight = imgLeft.height;
+
+                    const readerR = new FileReader();
+                    readerR.onload = (e) => {
+                        imgRight.onload = () => {
+                            originalRightWidth = imgRight.width;
+                            drawCombinedImage();
+                            updateStatus();
+                        };
+                        imgRight.src = e.target.result;
+                    };
+                    readerR.readAsDataURL(fileR);
+                };
+                imgLeft.src = e.target.result;
+            };
+            readerL.readAsDataURL(fileL);
+        }
+
+        function drawCombinedImage() {
+            if (!imgLeft.complete || !imgRight.complete) return;
+
+            // Ensure heights match (a basic requirement for rectified stereo pairs)
+            const minHeight = Math.min(imgLeft.height, imgRight.height);
+            imgLeft.height = minHeight;
+            imgRight.height = minHeight;
+
+            const totalWidth = imgLeft.width + imgRight.width;
+            const maxHeight = 500; // Max display height for aesthetics
+
+            // Calculate scale factor to fit within max width/height
+            const screenWidth = window.innerWidth * 0.9;
+            let scaleW = screenWidth / totalWidth;
+            let scaleH = maxHeight / minHeight;
+
+            canvasScale = Math.min(scaleW, scaleH);
+
+            canvasTotalWidth = totalWidth * canvasScale;
+            canvas.width = canvasTotalWidth;
+            canvas.height = minHeight * canvasScale;
+
+            redrawCanvas();
+        }
+
+        function redrawCanvas() {
+            if (!imgLeft.complete || !imgRight.complete) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const scaledLWidth = imgLeft.width * canvasScale;
+            const scaledHeight = imgLeft.height * canvasScale;
+
+            // Draw Left Image
+            ctx.drawImage(imgLeft, 0, 0, scaledLWidth, scaledHeight);
+            // Draw Right Image
+            ctx.drawImage(imgRight, scaledLWidth, 0, imgRight.width * canvasScale, scaledHeight);
+
+            // Draw click marks and connecting lines
+            clickedPoints.forEach((point, index) => {
+                // Draw a circle for the click point
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = index < 2 ? 'red' : 'green'; // Red for Z points, Green for Width points
+                ctx.fill();
+
+                // Draw the index number
+                ctx.fillStyle = 'white';
+                ctx.font = '10px sans-serif';
+                ctx.fillText(index + 1, point.x + 6, point.y - 6);
+
+                // If this is the second Z point, draw the horizontal epipolar line check
+                if (index === 1) {
+                    ctx.beginPath();
+                    ctx.strokeStyle = 'red';
+                    ctx.setLineDash([5, 5]);
+                    ctx.moveTo(point.x, point.y);
+                    ctx.lineTo(clickedPoints[0].x, clickedPoints[0].y);
+                    ctx.stroke();
+                    ctx.setLineDash([]); // Reset line dash
+                }
+            });
+        }
+
+
+        canvas.addEventListener('click', function(e) {
+            if (!imgLeft.src || !imgRight.src || clickedPoints.length >= 4) {
+                return;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            // Store scaled coordinates
+            clickedPoints.push({x, y});
+
+            redrawCanvas();
+            updateStatus();
+
+            if (clickedPoints.length === 4) {
+                calculateStereoSize();
+            }
+        });
+
+        // --- CALCULATION LOGIC (Core of the Assignment) ---
+
+        function calculateStereoSize() {
+            const errorBox = document.getElementById('errorBox');
+            errorBox.classList.add('hidden');
+
+            try {
+                // 1. Get Calibration Parameters
+                const fx = parseFloat(document.getElementById('fx').value);
+                const baseline = parseFloat(document.getElementById('baseline').value);
+
+                if (isNaN(fx) || isNaN(baseline) || fx <= 0 || baseline <= 0) {
+                    throw new Error("Invalid calibration parameters. Please ensure Focal Length ($f_x$) and Baseline ($B$) are positive numbers.");
+                }
+
+                // 2. Get and Un-scale Clicks (P1_L, P1_R, P2_Edge1, P2_Edge2)
+                const [p1L_scaled, p1R_scaled, p2E1_scaled, p2E2_scaled] = clickedPoints;
+                const invScale = 1.0 / canvasScale;
+
+                // Function to unscale points back to original image pixel coordinates
+                const unscale = (p) => ({
+                    x: p.x * invScale,
+                    y: p.y * invScale
+                });
+
+                const p1L_orig = unscale(p1L_scaled);
+                const p1R_orig = unscale(p1R_scaled);
+                const p2E1_orig = unscale(p2E1_scaled);
+                const p2E2_orig = unscale(p2E2_scaled);
+
+                // --- STEP 1: Estimate Distance (Z) ---
+
+                // P1_L: x-coordinate in the Left Image (absolute)
+                const xL = p1L_orig.x;
+
+                // P1_R: x-coordinate in the Right Image (relative to R image's origin)
+                // The stored coordinate for P1_R is relative to the combined image (x_R_combined).
+                // We subtract the original width of the left image to get the coordinate in the Right Image frame.
+                const xR = p1R_orig.x - originalLeftWidth;
+
+                // 1. Calculate Disparity (d)
+                const disparity_d = xL - xR;
+
+                if (disparity_d <= 0) {
+                    throw new Error("Disparity ($d = x_L - x_R$) is non-positive or zero. This means the object is infinitely far or your clicks are reversed/incorrect. Please reset and ensure P1_L > P1_R.");
+                }
+
+                // 2. Apply Stereo Distance Formula: Z = (f * B) / d
+                const calculatedZ = (fx * baseline) / disparity_d;
+
+                // --- STEP 2: Estimate Object Size (Width) ---
+
+                // 1. Calculate Pixel Size (Width in pixels) from the Left Image
+                // We assume P2_Edge1 and P2_Edge2 were clicked on the Left Image.
+                const pixelWidth = Math.abs(p2E2_orig.x - p2E1_orig.x);
+
+                // 2. Apply Monocular Size Formula: Real_Size = (Pixel_Size * Z) / f
+                const realWorldWidth = (pixelWidth * calculatedZ) / fx;
+
+                // --- Display Results ---
+                document.getElementById('resultZ').textContent = `${calculatedZ.toFixed(2)} cm`;
+                document.getElementById('resultWidth').textContent = `${realWorldWidth.toFixed(2)} cm`;
+
+            } catch (error) {
+                console.error("Calculation Error:", error);
+                errorBox.textContent = `Calculation failed: ${error.message}`;
+                errorBox.classList.remove('hidden');
+                document.getElementById('resultZ').textContent = '-- ERROR --';
+                document.getElementById('resultWidth').textContent = '-- ERROR --';
+            }
+        }
+
+        // Initialize listeners and setup
+        window.addEventListener('resize', () => {
+            if (imgLeft.src && imgRight.src) {
+                drawCombinedImage();
+            }
+        });
+
+    </script>
+</body>
+</html>
